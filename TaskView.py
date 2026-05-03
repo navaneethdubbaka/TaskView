@@ -15,6 +15,18 @@ def get_db():
     return conn
 
 
+def normalize_positions():
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT id
+            FROM tasks
+            ORDER BY COALESCE(position, 2147483647) ASC, id ASC
+        """).fetchall()
+
+        for idx, row in enumerate(rows):
+            conn.execute("UPDATE tasks SET position=? WHERE id=?", (idx, row["id"]))
+
+
 def init_db():
     with get_db() as conn:
         conn.execute("""
@@ -33,18 +45,6 @@ def init_db():
             conn.execute("ALTER TABLE tasks ADD COLUMN position INTEGER NOT NULL DEFAULT 0")
 
     normalize_positions()
-
-
-def normalize_positions():
-    with get_db() as conn:
-        rows = conn.execute("""
-            SELECT id
-            FROM tasks
-            ORDER BY COALESCE(position, 2147483647) ASC, id ASC
-        """).fetchall()
-
-        for idx, row in enumerate(rows):
-            conn.execute("UPDATE tasks SET position=? WHERE id=?", (idx, row["id"]))
 
 
 def task_to_dict(row):
@@ -77,6 +77,7 @@ MAIN_HTML = """
         }
 
         * { box-sizing: border-box; }
+
         html, body {
             margin: 0;
             min-height: 100%;
@@ -121,7 +122,7 @@ MAIN_HTML = """
         .panel {
             width: 100%;
             background: var(--card);
-            border: 1px solid var(--line);
+            border: 1px solid rgba(148, 163, 184, 0.16);
             border-radius: 26px;
             backdrop-filter: blur(20px);
             box-shadow: var(--shadow);
@@ -140,7 +141,7 @@ MAIN_HTML = """
             gap: 12px;
             align-items: center;
             background: rgba(15,23,42,0.92);
-            border: 1px solid var(--line);
+            border: 1px solid rgba(148, 163, 184, 0.16);
             border-radius: 18px;
             padding: 12px;
         }
@@ -259,6 +260,7 @@ MAIN_HTML = """
 </html>
 """
 
+
 DESKTOP_HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -281,6 +283,7 @@ DESKTOP_HTML = """
         }
 
         * { box-sizing: border-box; }
+
         html, body {
             margin: 0;
             min-height: 100%;
@@ -325,38 +328,11 @@ DESKTOP_HTML = """
         .panel {
             width: 100%;
             background: var(--card);
-            border: 1px solid var(--line);
+            border: 1px solid rgba(148, 163, 184, 0.16);
             border-radius: 26px;
             backdrop-filter: blur(20px);
             box-shadow: var(--shadow);
             padding: 18px;
-        }
-
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 10px;
-            margin-bottom: 14px;
-        }
-
-        .stat {
-            background: rgba(15,23,42,0.65);
-            border: 1px solid var(--line);
-            border-radius: 18px;
-            padding: 12px 14px;
-            min-width: 0;
-        }
-
-        .stat .label {
-            color: var(--muted);
-            font-size: 12px;
-            margin-bottom: 6px;
-        }
-
-        .stat .value {
-            font-size: 22px;
-            font-weight: 800;
-            letter-spacing: -0.03em;
         }
 
         .list {
@@ -364,7 +340,7 @@ DESKTOP_HTML = """
             flex-direction: column;
             gap: 10px;
             min-height: 120px;
-            max-height: calc(100vh - 220px);
+            max-height: calc(100vh - 170px);
             overflow-y: auto;
             padding-right: 2px;
         }
@@ -385,7 +361,7 @@ DESKTOP_HTML = """
             padding: 14px 14px;
             border-radius: 18px;
             background: rgba(15,23,42,0.78);
-            border: 1px solid var(--line);
+            border: 1px solid rgba(148, 163, 184, 0.16);
             transition: transform 140ms ease, background 140ms ease, border-color 140ms ease;
             user-select: none;
         }
@@ -448,8 +424,7 @@ DESKTOP_HTML = """
         @media (max-width: 700px) {
             body { padding: 10px; }
             .panel { padding: 14px; border-radius: 22px; }
-            .stats { grid-template-columns: 1fr; }
-            .list { max-height: calc(100vh - 300px); }
+            .list { max-height: calc(100vh - 190px); }
         }
     </style>
 </head>
@@ -461,33 +436,13 @@ DESKTOP_HTML = """
         </div>
 
         <div class="panel">
-            <div class="stats">
-                <div class="stat">
-                    <div class="label">Total</div>
-                    <div id="statTotal" class="value">0</div>
-                </div>
-                <div class="stat">
-                    <div class="label">Done</div>
-                    <div id="statDone" class="value">0</div>
-                </div>
-                <div class="stat">
-                    <div class="label">Pending</div>
-                    <div id="statPending" class="value">0</div>
-                </div>
-            </div>
-
             <div id="tasksList" class="list"></div>
-
             <div class="hint">Drag the handle to reorder. Tick the box to complete.</div>
         </div>
     </div>
 
 <script>
     const tasksList = document.getElementById("tasksList");
-    const statTotal = document.getElementById("statTotal");
-    const statDone = document.getElementById("statDone");
-    const statPending = document.getElementById("statPending");
-
     let draggedTaskEl = null;
 
     function escapeHtml(text) {
@@ -499,10 +454,6 @@ DESKTOP_HTML = """
     async function loadTasks() {
         const res = await fetch("/api/tasks");
         const tasks = await res.json();
-
-        statTotal.textContent = tasks.length;
-        statDone.textContent = tasks.filter(t => t.completed).length;
-        statPending.textContent = tasks.filter(t => !t.completed).length;
 
         if (!tasks.length) {
             tasksList.innerHTML = `
