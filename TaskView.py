@@ -421,6 +421,63 @@ DESKTOP_HTML = """
             text-align: center;
         }
 
+        .ctx-menu {
+            position: fixed;
+            z-index: 9999;
+            background: rgba(10, 18, 36, 0.98);
+            border: 1px solid rgba(148, 163, 184, 0.22);
+            border-radius: 12px;
+            padding: 5px;
+            min-width: 172px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.55);
+            backdrop-filter: blur(20px);
+            display: none;
+        }
+
+        .ctx-menu.visible {
+            display: block;
+        }
+
+        .ctx-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 9px 14px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            color: var(--text);
+            transition: background 100ms ease, color 100ms ease;
+            user-select: none;
+            white-space: nowrap;
+        }
+
+        .ctx-item:hover {
+            background: rgba(56, 189, 248, 0.13);
+            color: var(--accent);
+        }
+
+        .ctx-item.danger { color: var(--danger); }
+
+        .ctx-item.danger:hover {
+            background: rgba(248, 113, 113, 0.12);
+            color: var(--danger);
+        }
+
+        .ctx-sep {
+            height: 1px;
+            background: rgba(148, 163, 184, 0.14);
+            margin: 4px 0;
+        }
+
+        .task-title[contenteditable="true"] {
+            outline: none;
+            background: rgba(56, 189, 248, 0.08);
+            border-radius: 6px;
+            padding: 2px 6px;
+            border: 1px solid rgba(56, 189, 248, 0.32);
+        }
+
         @media (max-width: 700px) {
             body { padding: 10px; }
             .panel { padding: 14px; border-radius: 22px; }
@@ -437,8 +494,15 @@ DESKTOP_HTML = """
 
         <div class="panel">
             <div id="tasksList" class="list"></div>
-            <div class="hint">Drag the handle to reorder. Tick the box to complete.</div>
+            <div class="hint">Drag to reorder &middot; Tick to complete &middot; Right-click for more options</div>
         </div>
+    </div>
+
+    <div id="ctxMenu" class="ctx-menu" role="menu">
+        <div class="ctx-item" id="ctxEdit">Edit title</div>
+        <div class="ctx-item" id="ctxToggle">Mark complete</div>
+        <div class="ctx-sep"></div>
+        <div class="ctx-item danger" id="ctxDelete">Delete</div>
     </div>
 
 <script>
@@ -552,6 +616,81 @@ DESKTOP_HTML = """
         await loadTasks();
     }
 
+    // ---- context menu ----
+    const ctxMenu = document.getElementById("ctxMenu");
+    let ctxTaskId = null;
+
+    function showCtxMenu(x, y, taskId, completed) {
+        ctxTaskId = taskId;
+        document.getElementById("ctxToggle").textContent = completed ? "Mark incomplete" : "Mark complete";
+        ctxMenu.style.left = x + "px";
+        ctxMenu.style.top = y + "px";
+        ctxMenu.classList.add("visible");
+        const rect = ctxMenu.getBoundingClientRect();
+        if (rect.right > window.innerWidth) ctxMenu.style.left = (x - rect.width) + "px";
+        if (rect.bottom > window.innerHeight) ctxMenu.style.top = (y - rect.height) + "px";
+    }
+
+    function hideCtxMenu() {
+        ctxMenu.classList.remove("visible");
+        ctxTaskId = null;
+    }
+
+    tasksList.addEventListener("contextmenu", (e) => {
+        const taskEl = e.target.closest(".task");
+        if (!taskEl) return;
+        e.preventDefault();
+        showCtxMenu(e.clientX, e.clientY, Number(taskEl.dataset.id), taskEl.classList.contains("completed"));
+    });
+
+    document.addEventListener("click", (e) => { if (!ctxMenu.contains(e.target)) hideCtxMenu(); });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideCtxMenu(); });
+
+    document.getElementById("ctxEdit").addEventListener("click", () => {
+        const id = ctxTaskId;
+        hideCtxMenu();
+        const taskEl = tasksList.querySelector(`.task[data-id="${id}"]`);
+        if (!taskEl) return;
+        const titleEl = taskEl.querySelector(".task-title");
+        const oldTitle = titleEl.textContent;
+        titleEl.contentEditable = "true";
+        titleEl.focus();
+        const range = document.createRange();
+        range.selectNodeContents(titleEl);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+
+        async function commitEdit() {
+            const newTitle = titleEl.textContent.trim();
+            titleEl.contentEditable = "false";
+            if (!newTitle || newTitle === oldTitle) { titleEl.textContent = oldTitle; return; }
+            const fd = new FormData();
+            fd.append("title", newTitle);
+            await fetch(`/api/tasks/${id}/rename`, { method: "POST", body: fd });
+            await loadTasks();
+        }
+
+        titleEl.addEventListener("blur", commitEdit, { once: true });
+        titleEl.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") { e.preventDefault(); titleEl.blur(); }
+            if (e.key === "Escape") { titleEl.textContent = oldTitle; titleEl.contentEditable = "false"; }
+        });
+    });
+
+    document.getElementById("ctxToggle").addEventListener("click", async () => {
+        const id = ctxTaskId;
+        hideCtxMenu();
+        await toggleTask(id);
+    });
+
+    document.getElementById("ctxDelete").addEventListener("click", async () => {
+        const id = ctxTaskId;
+        hideCtxMenu();
+        await fetch(`/api/tasks/${id}/delete`, { method: "POST" });
+        await loadTasks();
+    });
+
     loadTasks();
     setInterval(loadTasks, 2000);
 </script>
@@ -607,6 +746,24 @@ def toggle_task(task_id):
             SET completed = CASE WHEN completed = 1 THEN 0 ELSE 1 END
             WHERE id = ?
         """, (task_id,))
+    return "", 204
+
+
+@app.route("/api/tasks/<int:task_id>/delete", methods=["POST"])
+def delete_task(task_id):
+    with get_db() as conn:
+        conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    normalize_positions()
+    return "", 204
+
+
+@app.route("/api/tasks/<int:task_id>/rename", methods=["POST"])
+def rename_task(task_id):
+    title = request.form.get("title", "").strip()
+    if not title:
+        return jsonify({"error": "Title is required"}), 400
+    with get_db() as conn:
+        conn.execute("UPDATE tasks SET title = ? WHERE id = ?", (title, task_id))
     return "", 204
 
 
